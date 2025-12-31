@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Gestos en Tiempo Real</title>
+
+<style>
+body {
+  background:#111;
+  color:#fff;
+  font-family:Arial;
+  text-align:center;
+}
+.box {
+  border:1px solid #444;
+  padding:20px;
+  margin:20px auto;
+  width:360px;
+}
+.row {
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+}
+.value {
+  font-size:2em;
+}
+canvas {
+  background:#000;
+  border:1px solid #333;
+}
+button {
+  padding:10px 20px;
+  font-size:16px;
+}
+.led {
+  width:20px;
+  height:20px;
+  border-radius:50%;
+  margin:10px auto;
+  background:gray;
+}
+</style>
+</head>
+
+<body>
+
+<h2>TUVN – Automatización e Instrumentación</h2>
+<p>Proyecto Final – Edge Impulse</p>
+
+<button onclick="connect()">Conectar Bluetooth</button>
+<p id="status">Estado: Desconectado</p>
+
+<div class="box">
+  <h3>Gestos 1 (Bobinado)</h3>
+  <div class="row">
+    <div>
+      <div class="value" id="g1">0.0000</div>
+      <p>Máx: <span id="g1max">0.0000</span></p>
+    </div>
+    <canvas id="osc1" width="140" height="60"></canvas>
+  </div>
+</div>
+
+<div class="box">
+  <h3>Gestos 2 (Rodamiento)</h3>
+  <div class="row">
+    <div>
+      <div class="value" id="g2">0.0000</div>
+      <p>Máx: <span id="g2max">0.0000</span></p>
+    </div>
+    <canvas id="osc2" width="140" height="60"></canvas>
+  </div>
+</div>
+
+<div class="box">
+  <h3>CONTROL MOTOR</h3>
+  <button onclick="rearme()">REARME</button>
+  <div id="motorLed" class="led"></div>
+  <p id="motorTxt">Motor: OFF</p>
+</div>
+
+<div class="box">
+  <h3>SISTEMA DE LUBRICACIÓN</h3>
+  <button id="lubBtn" onclick="lubricar()" disabled>LUBRICAR</button>
+  <div id="lubLed" class="led"></div>
+  <p id="lubTxt">Lubricador: OFF</p>
+</div>
+
+<div class="box">
+  <h3>Histórico de Fallas</h3>
+  <ul id="historial" style="text-align:left;font-size:14px;"></ul>
+</div>
+
+<script>
+let characteristic, rxCharacteristic;
+let g1max = 0, g2max = 0;
+let historial = [];
+let buf1 = Array(50).fill(0);
+let buf2 = Array(50).fill(0);
+
+async function connect() {
+  const device = await navigator.bluetooth.requestDevice({
+    filters: [{ name: "ESP32_GESTOS" }],
+    optionalServices: ["6e400001-b5a3-f393-e0a9-e50e24dcca9e"]
+  });
+
+  const server = await device.gatt.connect();
+  const service = await server.getPrimaryService(
+    "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
+  );
+
+  characteristic = await service.getCharacteristic(
+    "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
+  );
+  rxCharacteristic = await service.getCharacteristic(
+    "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
+  );
+
+  characteristic.startNotifications();
+  characteristic.addEventListener("characteristicvaluechanged", handleData);
+
+  document.getElementById("status").innerText = "Estado: Conectado";
+}
+
+function handleData(e) {
+  const t = new TextDecoder().decode(e.target.value).split(",");
+  let g1 = parseFloat(t[0].split(":")[1]);
+  let g2 = parseFloat(t[1].split(":")[1]);
+  let motor = t[2].split(":")[1];
+  let falla = t[3].split(":")[1];
+
+  document.getElementById("g1").innerText = g1.toFixed(4);
+  document.getElementById("g2").innerText = g2.toFixed(4);
+
+  if (g1 > g1max) document.getElementById("g1max").innerText = (g1max = g1).toFixed(4);
+  if (g2 > g2max) document.getElementById("g2max").innerText = (g2max = g2).toFixed(4);
+
+  actualizarMotor(motor, falla);
+  actualizarOsc(buf1, g1, "osc1", "lime");
+  actualizarOsc(buf2, g2, "osc2", "cyan");
+}
+
+function actualizarMotor(motor, falla) {
+  const led = motorLed, txt = motorTxt;
+  if (motor === "ON") {
+    led.style.background = "green";
+    txt.innerText = "Motor: ON";
+    lubBtn.disabled = true;
+  } else {
+    if (falla === "BOBINADO") {
+      led.style.background = "red";
+      txt.innerText = "Falla: Bobinado";
+      agregarHistorial("Bobinado");
+    }
+    if (falla === "RODAMIENTO") {
+      led.style.background = "orange";
+      txt.innerText = "Falla: Rodamiento";
+      agregarHistorial("Rodamiento");
+      lubBtn.disabled = false;
+    }
+  }
+}
+
+function actualizarOsc(buf, val, id, color) {
+  buf.push(val); buf.shift();
+  const c = document.getElementById(id).getContext("2d");
+  c.clearRect(0,0,140,60);
+  c.strokeStyle = color;
+  c.beginPath();
+  buf.forEach((v,i)=>{
+    let y = 60 - v*60;
+    c.lineTo(i*3, y);
+  });
+  c.stroke();
+}
+
+function agregarHistorial(t) {
+  let h = new Date().toLocaleTimeString()+" → "+t;
+  if (historial[0] !== h) {
+    historial.unshift(h);
+    historial.length = Math.min(historial.length,6);
+    historialElem.innerHTML = historial.map(e=>`<li>${e}</li>`).join("");
+  }
+}
+
+function rearme() {
+  rxCharacteristic.writeValue(new TextEncoder().encode("REARME"));
+}
+
+function lubricar() {
+  rxCharacteristic.writeValue(new TextEncoder().encode("LUB_ON"));
+  lubLed.style.background = "blue";
+  lubTxt.innerText = "Lubricador: ON";
+}
+</script>
+
+</body>
+</html>
